@@ -1,0 +1,96 @@
+import cv2
+import numpy as np
+import glob
+
+# Disable scientific notation for readability
+np.set_printoptions(suppress = True)
+
+# Define termination criteria for SubPix algorithm
+criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
+sqDim = 2.41    # chessboard square dimensions
+
+# Form object points' grid, this will be assigned to each corner in order detected on board
+objp = np.zeros((9*6, 3), np.float32)
+
+# Form an x-y grid where 0:6 presents the x values of the grid and 0:9 presents the y values of the grid, exclusive of
+# the value after the colon (i.e. up to 5 and 8 respectively). '.T' takes transpose and reshape (-1, 2) reshapes the
+# result into an 'nx2' matrix. '-1' simply means undefined rows, so the reshaping is done by inference. We reshape just
+# 2 columns of the original as we assume z-axis (3rd column) in WC = 0.
+objp[:, :2] = np.mgrid[0:9, 0:6].T.reshape(-1, 2)*sqDim
+
+# Note that the findChessboardCorners() function traverses rows vertically (along y-axis) first, and then along x-axis.
+# Traversing rows is similar to moving along the y axis, and traversing columns is akin to moving along x axis. This is
+# important to know in order to relate the euclidean co-ordinates (x, y, z) to the matrix ordering (col1, col2, col3).
+# Since a change in row means a y axis movement, the objp matrix notation actually shows Euclidean equivalent as
+# (y, x, z). A bit counter-intuitive, but necessary to understand. In order to make this Euclidean representation easy
+# for a viewer, the first two columns of objp may be swapped, which is done in the next line. This does not seem to
+# affect the calibration and provides a more intuitive way of looking at things.
+objp[:, [0, 1]] = objp[:, [1, 0]]
+
+# Initialize arrays for storing object and image points
+objPoints = []
+imgPoints = []
+
+images = glob.glob('samples/*.png')     # samples' location
+reSize = (640, 480)
+
+if images is False:
+    print("No images were found. Please verify location and filetype (expecting '.png').")
+
+else:
+    # Gather required data (corners) from each image after converting to grayscale
+    for i in images:
+        img = cv2.resize(cv2.imread(i), reSize, interpolation = cv2.INTER_AREA)
+        cvtGray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        cv2.imshow('Raw Input', img)
+
+        corner_found, corners = cv2.findChessboardCorners(cvtGray, (9, 6), None)
+
+        if corner_found is True:
+            # Refine corners and begin appending object and image points
+            objPoints.append(objp)
+            cornersRefined = cv2.cornerSubPix(cvtGray, corners, (4, 4), (-1, -1), criteria)
+            imgPoints.append(cornersRefined)
+
+            # Draw and display the corners
+            img = cv2.drawChessboardCorners(img, (9, 6), cornersRefined, corner_found)
+            cv2.imshow('Input w/ Corners Drawn', img)
+            cv2.waitKey(1)
+
+cv2.destroyAllWindows()
+
+# Perform Zhang's calibration. cvtGray.shape[::-1] means that the image's shape is provided in inverted order. This is
+# done because cvtGray is a matrix (rows, columns) while the function itself expects an image format shape which is of
+# (width, height) form. Width is obviously the horizontal traversal of pixels and height is vertical. In matrix form
+# (rows, columns), row movement is vertical traversal while column movement is vertical. We can see the orders are
+# different (width i.e. horizontal traversal is first on image format, but row i.e. vertical traversal is first on
+# matrix), thus necessitating the reversal.
+calibDone, cam_mtx, coeffDist, rVect, tVect = cv2.calibrateCamera(objPoints, imgPoints, cvtGray.shape[::-1], None, None)
+
+# Calculation of re-projection error to estimate mean accuracy of the calibration samples
+totalError = 0
+for i in range(len(objPoints)):
+    calcError_imgPoints, _ = cv2.projectPoints(objPoints[i], rVect[i], tVect[i], cam_mtx, coeffDist)
+    # NORM_L2 in 'cv2.norm' will provide error in terms of Euclidean Distance (square root of sum of squared distances)
+    # It is more accurate than L1 (no square rooting) at the cost of some speed. Also, 'calcError_imgPoints' has no [i]
+    # in front of the following argument pass, because it is already just a point as per earlier declaration. Remember
+    # that the norm function will ALWAYS only take the two input arrays of the same size.
+    error = cv2.norm(imgPoints[i], calcError_imgPoints, cv2.NORM_L2)/len(calcError_imgPoints)
+    totalError += error
+
+meanError = totalError/len(objPoints)
+
+# Save results to a text file.
+print("Re-projection Error: " + str(meanError))
+
+L = ["Reprojection Error: " + str(meanError) + "\n\n", "CALIBRATION RESULTS \n", "------------------- \n\n",
+     "Camera Matrix:\n\n" + str(cam_mtx) + "\n\n", "Distortion Coefficients (k1, k2, p1, p2, k3):\n\n" + str(coeffDist)
+     + "\n\n", "Rotation Vector:\n\n" + str(rVect) + "\n\n", "Translation Vector:\n\n" + str(tVect)]
+
+calibResults = open("calibResults.txt", "w")
+calibResults.writelines(L)
+print("The calibration results can be viewed in calibResults.txt inside the project directory.")
+
+cv2.waitKey(1)
+cv2.destroyAllWindows()
+
